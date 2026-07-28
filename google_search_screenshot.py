@@ -2,30 +2,42 @@
 """
 google_search_screenshot.py
 ---------------------------
-Performs a Google search, then captures a screenshot of the results page.
+Performs a web search, then captures a screenshot of the results page.
+
+Why this version exists
+  Google aggressively CAPTCHA-blocks automated browsers. This version reduces
+  that in three ways:
+    1. Persistent profile  - reuses a real, saved Edge profile folder so
+       cookies/session persist. Solve a CAPTCHA once (in headed mode) and it
+       is usually remembered for future runs.
+    2. Stealth tweaks      - hides the navigator.webdriver automation flag and
+       sets a normal user agent so you look like a regular browser.
+    3. CAPTCHA handling    - detects the "unusual traffic" page. In headed mode
+       it pauses so you can solve it by hand, then continues automatically.
+  You can also switch --engine to bing or duckduckgo, which almost never CAPTCHA.
 
 Features
   * Screenshot file name = the date & time the shot was taken
         e.g.  2026-07-28_10-54-09.png
   * A banner is drawn on top of the page showing the exact search query
     (and the timestamp) so the "search info" is always visible in the image.
-  * All screenshots are saved into a dedicated folder (default: ./screenshots).
-  * A running log (search_log.csv) records every query, timestamp and file path.
+  * Screenshots saved into a dedicated folder (default: ./screenshots).
+  * A running log (search_log.csv) records every query, timestamp and file.
+  * Uses your installed Microsoft Edge by default (no Chromium download needed).
 
-Usage
-  # Interactive (you'll be prompted for the query):
-  python google_search_screenshot.py
+Typical usage (recommended for Google to beat the CAPTCHA)
+  python google_search_screenshot.py "best coffee in Edmonton" --headed --ignore-https-errors
 
-  # Pass the query directly:
-  python google_search_screenshot.py "best coffee in Edmonton"
+  # Run again later - the saved profile usually means no CAPTCHA:
+  python google_search_screenshot.py "next query" --ignore-https-errors
 
-  # Options:
-  python google_search_screenshot.py "python tutorials" \
-        --output-dir ./shots --full-page --headed
+  # CAPTCHA-free alternative engines:
+  python google_search_screenshot.py "best coffee in Edmonton" --engine bing
+  python google_search_screenshot.py "best coffee in Edmonton" --engine duckduckgo
 
-First-time setup
+Setup
   pip install playwright
-  playwright install chromium
+  # Using your installed Edge (default) needs NO extra download.
 """
 
 import argparse
@@ -38,32 +50,42 @@ from urllib.parse import quote_plus
 from playwright.sync_api import sync_playwright, TimeoutError as PWTimeout
 
 
+SEARCH_URLS = {
+    "google": "https://www.google.com/search?q=",
+    "bing": "https://www.bing.com/search?q=",
+    "duckduckgo": "https://duckduckgo.com/?q=",
+}
+
+STEALTH_JS = """
+// Hide the automation flag most sites check for.
+Object.defineProperty(navigator, 'webdriver', {get: () => undefined});
+// A couple of other commonly-checked properties.
+Object.defineProperty(navigator, 'languages', {get: () => ['en-CA', 'en']});
+Object.defineProperty(navigator, 'plugins', {get: () => [1, 2, 3, 4, 5]});
+window.chrome = window.chrome || { runtime: {} };
+"""
+
+
 # ----------------------------------------------------------------------------- #
 #  Helpers
 # ----------------------------------------------------------------------------- #
 def timestamp() -> dt.datetime:
-    """Return current local time."""
     return dt.datetime.now()
 
 
 def make_filename(ts: dt.datetime) -> str:
-    """Build a filesystem-safe file name from the date & time."""
     # Colons are illegal in Windows file names, so use dashes.
     return ts.strftime("%Y-%m-%d_%H-%M-%S") + ".png"
 
 
 def dismiss_consent(page) -> None:
-    """
-    Google often shows a cookie/consent interstitial. Try to click the
-    'Accept all' / 'Reject all' button so the real results are captured.
-    Silently ignore if no such button exists.
-    """
+    """Click through any cookie/consent interstitial if one appears."""
     selectors = [
         "button:has-text('Accept all')",
         "button:has-text('Accept All')",
         "button:has-text('I agree')",
         "button:has-text('Reject all')",
-        "button#L2AGLb",              # common Google consent button id
+        "button#L2AGLb",
         "div[role='none'] button",
     ]
     for sel in selectors:
@@ -77,11 +99,52 @@ def dismiss_consent(page) -> None:
             continue
 
 
+def looks_like_captcha(page) -> bool:
+    """Best-effort detection of Google's 'unusual traffic' / reCAPTCHA page."""
+    try:
+        content = page.content().lower()
+    except Exception:
+        return False
+    markers = [
+        "unusual traffic",
+        "our systems have detected",
+        "recaptcha",
+        "/sorry/",
+        "are you a robot",
+        "verify you're a human",
+        "verify you are a human",
+    ]
+    url = (page.url or "").lower()
+    if "/sorry/" in url or "captcha" in url:
+        return True
+    return any(m in content for m in markers)
+
+
+def handle_captcha(page, headed: bool) -> None:
+    """
+    If a CAPTCHA is shown: in headed mode, pause so the user can solve it and
+    press Enter to continue. In headless mode, warn (can't be solved).
+    """
+    if not looks_like_captcha(page):
+        return
+    if headed:
+        print("\n" + "=" * 64)
+        print(" A CAPTCHA appeared. Please solve it in the browser window,")
+        print(" then come back here and press Enter to continue capturing.")
+        print("=" * 64)
+        try:
+            input(" Press Enter once solved... ")
+        except (EOFError, KeyboardInterrupt):
+            pass
+        page.wait_for_timeout(1500)
+    else:
+        print("\n  ! A CAPTCHA was detected but the browser is headless so it")
+        print("    can't be solved. Re-run with --headed, or use")
+        print("    --engine bing / --engine duckduckgo to avoid it.\n")
+
+
 def add_banner(page, query: str, ts: dt.datetime) -> None:
-    """
-    Inject a fixed banner at the top of the page that shows the search query
-    and the capture time, guaranteeing the 'search info' is visible in the shot.
-    """
+    """Inject a banner showing the query + capture time so it's in the image."""
     when = ts.strftime("%Y-%m-%d %H:%M:%S")
     js = """
     ([query, when]) => {
@@ -102,12 +165,10 @@ def add_banner(page, query: str, ts: dt.datetime) -> None:
         page.evaluate(js, [query, when])
         page.wait_for_timeout(300)
     except Exception:
-        # Banner is a nice-to-have; never fail the run because of it.
         pass
 
 
 def log_result(output_dir: Path, ts: dt.datetime, query: str, path: Path) -> None:
-    """Append a row to a CSV log so you have a searchable history."""
     log_file = output_dir / "search_log.csv"
     new_file = not log_file.exists()
     with log_file.open("a", newline="", encoding="utf-8") as f:
@@ -121,43 +182,54 @@ def log_result(output_dir: Path, ts: dt.datetime, query: str, path: Path) -> Non
 #  Core routine
 # ----------------------------------------------------------------------------- #
 def run(query: str, output_dir: Path, full_page: bool, headed: bool,
-        ignore_https_errors: bool) -> Path:
+        ignore_https_errors: bool, browser_channel: str, engine: str,
+        profile_dir: Path) -> Path:
     output_dir.mkdir(parents=True, exist_ok=True)
+    profile_dir.mkdir(parents=True, exist_ok=True)
 
     ts = timestamp()
-    filename = make_filename(ts)
-    out_path = output_dir / filename
+    out_path = output_dir / make_filename(ts)
+    search_url = SEARCH_URLS[engine] + quote_plus(query)
 
-    search_url = "https://www.google.com/search?q=" + quote_plus(query)
+    ua = ("Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+          "AppleWebKit/537.36 (KHTML, like Gecko) "
+          "Chrome/124.0.0.0 Safari/537.36 Edg/124.0.0.0")
 
     with sync_playwright() as p:
-        browser = p.chromium.launch(headless=not headed)
-        context = browser.new_context(
-            viewport={"width": 1366, "height": 900},
-            locale="en-CA",
-            user_agent=(
-                "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
-                "AppleWebKit/537.36 (KHTML, like Gecko) "
-                "Chrome/124.0.0.0 Safari/537.36"
-            ),
-            ignore_https_errors=ignore_https_errors,
-        )
-        page = context.new_page()
+        ctx_kwargs = {
+            "user_data_dir": str(profile_dir),
+            "headless": not headed,
+            "viewport": {"width": 1366, "height": 900},
+            "locale": "en-CA",
+            "user_agent": ua,
+            "ignore_https_errors": ignore_https_errors,
+            "args": ["--disable-blink-features=AutomationControlled"],
+        }
+        if browser_channel and browser_channel.lower() != "chromium":
+            ctx_kwargs["channel"] = browser_channel
 
-        print(f'Searching Google for: "{query}"')
+        # Persistent context keeps cookies/session between runs -> fewer CAPTCHAs.
+        context = p.chromium.launch_persistent_context(**ctx_kwargs)
+        context.add_init_script(STEALTH_JS)
+        page = context.pages[0] if context.pages else context.new_page()
+
+        print(f'Searching {engine} for: "{query}"  '
+              f'(browser: {browser_channel or "chromium"})')
         try:
             page.goto(search_url, timeout=30000, wait_until="domcontentloaded")
         except PWTimeout:
             print("  ! Navigation timed out; capturing whatever loaded.")
 
         dismiss_consent(page)
+        page.wait_for_timeout(1500)
 
-        # Give results a moment to settle, then annotate and capture.
-        page.wait_for_timeout(2000)
+        if engine == "google":
+            handle_captcha(page, headed)
+
+        page.wait_for_timeout(1000)
         add_banner(page, query, ts)
-
         page.screenshot(path=str(out_path), full_page=full_page)
-        browser.close()
+        context.close()
 
     log_result(output_dir, ts, query, out_path)
     return out_path
@@ -168,28 +240,28 @@ def run(query: str, output_dir: Path, full_page: bool, headed: bool,
 # ----------------------------------------------------------------------------- #
 def parse_args(argv):
     parser = argparse.ArgumentParser(
-        description="Perform a Google search and save a timestamped screenshot."
+        description="Perform a web search and save a timestamped screenshot."
     )
-    parser.add_argument(
-        "query", nargs="*",
-        help="The search query. If omitted, you'll be prompted for it.",
-    )
-    parser.add_argument(
-        "--output-dir", "-o", default="screenshots",
-        help="Folder to save screenshots in (default: ./screenshots).",
-    )
-    parser.add_argument(
-        "--full-page", action="store_true",
-        help="Capture the entire scrollable page instead of just the viewport.",
-    )
-    parser.add_argument(
-        "--headed", action="store_true",
-        help="Show the browser window while it works (default: headless).",
-    )
-    parser.add_argument(
-        "--ignore-https-errors", action="store_true",
-        help="Ignore TLS/certificate errors (needed behind some corporate proxies).",
-    )
+    parser.add_argument("query", nargs="*",
+                        help="The search query. If omitted, you'll be prompted.")
+    parser.add_argument("--engine", "-e", default="google",
+                        choices=["google", "bing", "duckduckgo"],
+                        help="Search engine (default: google). bing/duckduckgo "
+                             "rarely CAPTCHA automated browsers.")
+    parser.add_argument("--output-dir", "-o", default="screenshots",
+                        help="Folder to save screenshots (default: ./screenshots).")
+    parser.add_argument("--profile-dir", default="edge_profile",
+                        help="Folder that stores the persistent browser profile "
+                             "(cookies/session). Default: ./edge_profile.")
+    parser.add_argument("--browser-channel", "-b", default="msedge",
+                        help="'msedge' (default), 'chrome', or 'chromium'.")
+    parser.add_argument("--full-page", action="store_true",
+                        help="Capture the entire scrollable page.")
+    parser.add_argument("--headed", action="store_true",
+                        help="Show the browser window (needed to solve a CAPTCHA "
+                             "by hand). Default: headless.")
+    parser.add_argument("--ignore-https-errors", action="store_true",
+                        help="Ignore TLS/cert errors (corporate proxies).")
     return parser.parse_args(argv)
 
 
@@ -199,7 +271,7 @@ def main(argv=None):
     query = " ".join(args.query).strip()
     if not query:
         try:
-            query = input("Enter your Google search query: ").strip()
+            query = input("Enter your search query: ").strip()
         except (EOFError, KeyboardInterrupt):
             print("\nNo query provided. Exiting.")
             return 1
@@ -214,9 +286,14 @@ def main(argv=None):
             full_page=args.full_page,
             headed=args.headed,
             ignore_https_errors=args.ignore_https_errors,
+            browser_channel=args.browser_channel,
+            engine=args.engine,
+            profile_dir=Path(args.profile_dir).expanduser().resolve(),
         )
     except Exception as exc:  # noqa: BLE001
         print(f"Something went wrong: {exc}")
+        if "channel" in str(exc).lower() or "executable" in str(exc).lower():
+            print("Tip: ensure Edge is installed, or try --browser-channel chrome.")
         return 2
 
     print(f"Screenshot saved to: {path}")
