@@ -7,7 +7,8 @@ that was run.
 
 ## What it does
 
-- Opens Google and runs whatever query you give it.
+- Opens Google by default, can configure to run bing or duckduckgo instead, and runs whatever
+  query you give it.
 - Draws a blue banner on the page: `Search query: "..."  |  Captured: YYYY-MM-DD HH:MM:SS`.
 - Saves the image to a folder (default `./screenshots`) with a name like `2026-07-28_10-54-09.png`.
 - Appends every run to `search_log.csv` (timestamp, query, file name) so you keep a history.
@@ -26,13 +27,13 @@ playwright install chromium
 Interactive (it will ask you for the query):
 
 ```bash
-python google_search_screenshot.py
+python search_screenshot.py
 ```
 
 Pass the query directly:
 
 ```bash
-python google_search_screenshot.py "best coffee in Edmonton"
+python search_screenshot.py "best coffee in Edmonton"
 ```
 
 ## Options
@@ -47,11 +48,11 @@ python google_search_screenshot.py "best coffee in Edmonton"
 Example combining options:
 
 ```bash
-python google_search_screenshot.py "python tutorials" -o ./shots --full-page --headed
+python search_screenshot.py "python tutorials" -o ./shots --full-page --headed
 ```
 
 ## Notes
 
 - The first run downloads the Chromium browser via `playwright install chromium`; after that it runs offline-fast.
-- If Google shows a cookie/consent page, the script tries to click through it automatically.
+- If the search engine shows a cookie/consent page, the script tries to click through it automatically.
 - Colons are avoided in file names so the timestamps work on Windows, macOS, and Linux.
