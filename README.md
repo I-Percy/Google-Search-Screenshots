@@ -5,6 +5,11 @@ saves a screenshot of the **entire first results page**. The screenshot is named
 **date and time** it was taken, and a banner is drawn across the top of the image showing the
 **exact search query** that was run.
 
+The purpose for this is to automate the ability to see search rankings in real time. This requires 
+you to set it up yourself, but if you have the knowledge it won't be difficult. This also allows 
+you to see search rankings quickly and without a profile attached. Just wipe the edge_profile folder 
+and you are a new user again. 
+
 ## What it does
 
 - Opens Google by default (can be switched to Bing or DuckDuckGo) and runs whatever query you give it.
