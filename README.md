@@ -1,8 +1,9 @@
-# Google Search Screenshot Tool
+# Search Screenshot Tool
 
-A small Python program that performs a Google search and saves a screenshot of the
-results page. The screenshot is named after the **date and time** it was taken, and a
-banner is drawn across the top of the image showing the **exact search query** that was run.
+A small Python program that performs a search on the engine of your choice (default Google) and 
+saves a screenshot of the results page. The screenshot is named after the **date and time** it 
+was taken, and a banner is drawn across the top of the image showing the **exact search query** 
+that was run.
 
 ## What it does
 
