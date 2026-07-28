@@ -33,7 +33,7 @@ python search_screenshot.py
 Pass the query directly:
 
 ```bash
-python search_screenshot.py "best coffee in Edmonton"
+python search_screenshot.py "best coffee in my city"
 ```
 
 ## Options
