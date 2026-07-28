@@ -76,3 +76,7 @@ Google sometimes shows an "unusual traffic" CAPTCHA to automated browsers. The t
 - Before capturing, the tool scrolls the page top-to-bottom so lazy-loaded content (images, the AI Overview, later results) fully renders, then returns to the top for a clean image.
 - If the search engine shows a cookie/consent page, the script tries to click through it automatically.
 - Colons are avoided in file names so the timestamps work on Windows, macOS, and Linux.
+
+## Example: 
+<img width="1366" height="3084" alt="image" src="https://github.com/user-attachments/assets/47eb9566-7ed3-4455-aaac-2689c6192093" />
+
