@@ -2,38 +2,30 @@
 """
 google_search_screenshot.py
 ---------------------------
-Performs a web search, then captures a screenshot of the results page.
-
-Why this version exists
-  Google aggressively CAPTCHA-blocks automated browsers. This version reduces
-  that in three ways:
-    1. Persistent profile  - reuses a real, saved Edge profile folder so
-       cookies/session persist. Solve a CAPTCHA once (in headed mode) and it
-       is usually remembered for future runs.
-    2. Stealth tweaks      - hides the navigator.webdriver automation flag and
-       sets a normal user agent so you look like a regular browser.
-    3. CAPTCHA handling    - detects the "unusual traffic" page. In headed mode
-       it pauses so you can solve it by hand, then continues automatically.
-  You can also switch --engine to bing or duckduckgo, which almost never CAPTCHA.
+Performs a web search and saves a screenshot of the ENTIRE first results page.
 
 Features
+  * Captures the full, scrollable first page of results (top to bottom) 
   * Screenshot file name = the date & time the shot was taken
         e.g.  2026-07-28_10-54-09.png
   * A banner is drawn on top of the page showing the exact search query
     (and the timestamp) so the "search info" is always visible in the image.
   * Screenshots saved into a dedicated folder (default: ./screenshots).
   * A running log (search_log.csv) records every query, timestamp and file.
-  * Uses your installed Microsoft Edge by default (no Chromium download needed).
+  * Uses Microsoft Edge by default (no Chromium download needed)
+    * Needs Linux support later. 
+  * Persistent profile + stealth tweaks reduce Google CAPTCHAs. 
+    * Run with --headed command first to save captcha settings. 
 
-Typical usage (recommended for Google to beat the CAPTCHA)
-  python google_search_screenshot.py "best coffee in Edmonton" --headed --ignore-https-errors
+Typical usage
+  python google_search_screenshot.py "Cat Facts" --headed --ignore-https-errors
 
-  # Run again later - the saved profile usually means no CAPTCHA:
-  python google_search_screenshot.py "next query" --ignore-https-errors
+  # Later runs usually skip the CAPTCHA thanks to the saved profile:
+  python google_search_screenshot.py "another query" --ignore-https-errors
 
   # CAPTCHA-free alternative engines:
-  python google_search_screenshot.py "best coffee in Edmonton" --engine bing
-  python google_search_screenshot.py "best coffee in Edmonton" --engine duckduckgo
+  python google_search_screenshot.py "Cat Facts" --engine bing
+  python google_search_screenshot.py "Cat Facts" --engine duckduckgo
 
 Setup
   pip install playwright
@@ -56,16 +48,9 @@ SEARCH_URLS = {
     "duckduckgo": "https://duckduckgo.com/?q=",
 }
 
-# Google's hidden "Web" filter. Appending &udm=14 returns the classic
-# links-only results page with NO AI Overview rendered server-side. This is
-# far more reliable than trying to remove the AI Overview from the DOM after
-# it lazily loads. Used automatically for Google when --skip-ai-overview is on.
-GOOGLE_WEB_ONLY_PARAM = "&udm=14"
-
 STEALTH_JS = """
 // Hide the automation flag most sites check for.
 Object.defineProperty(navigator, 'webdriver', {get: () => undefined});
-// A couple of other commonly-checked properties.
 Object.defineProperty(navigator, 'languages', {get: () => ['en-CA', 'en']});
 Object.defineProperty(navigator, 'plugins', {get: () => [1, 2, 3, 4, 5]});
 window.chrome = window.chrome || { runtime: {} };
@@ -80,7 +65,7 @@ def timestamp() -> dt.datetime:
 
 
 def make_filename(ts: dt.datetime) -> str:
-    # Colons are illegal in Windows file names, so use dashes.
+    # Colons are illegal in Windows file names. Dumb windows stuff. 
     return ts.strftime("%Y-%m-%d_%H-%M-%S") + ".png"
 
 
@@ -111,26 +96,18 @@ def looks_like_captcha(page) -> bool:
         content = page.content().lower()
     except Exception:
         return False
-    markers = [
-        "unusual traffic",
-        "our systems have detected",
-        "recaptcha",
-        "/sorry/",
-        "are you a robot",
-        "verify you're a human",
-        "verify you are a human",
-    ]
     url = (page.url or "").lower()
     if "/sorry/" in url or "captcha" in url:
         return True
+    markers = [
+        "unusual traffic", "our systems have detected", "recaptcha",
+        "are you a robot", "verify you're a human", "verify you are a human",
+    ]
     return any(m in content for m in markers)
 
 
 def handle_captcha(page, headed: bool) -> None:
-    """
-    If a CAPTCHA is shown: in headed mode, pause so the user can solve it and
-    press Enter to continue. In headless mode, warn (can't be solved).
-    """
+    """In headed mode, pause so the user can solve a CAPTCHA by hand."""
     if not looks_like_captcha(page):
         return
     if headed:
@@ -149,104 +126,29 @@ def handle_captcha(page, headed: bool) -> None:
         print("    --engine bing / --engine duckduckgo to avoid it.\n")
 
 
-def skip_ai_overview(page, engine: str, scroll_px: int) -> None:
+def scroll_to_load_all(page) -> None:
     """
-    Skip the AI-generated summary (Google 'AI Overview', Bing Copilot answer,
-    DuckDuckGo AI answers) two ways, for robustness:
-      1. Remove the AI card from the DOM by walking UP from its "AI Overview"
-         heading to the full card container (works even when class names change).
-      2. Scroll the FIRST ORGANIC RESULT to the top of the viewport, so even if
-         the card can't be removed, it falls out of the captured frame. This
-         does not rely on the card's height, unlike a fixed pixel scroll.
-    Best-effort: never fails the run.
-    """
-    js = """
-    ([engine, fallbackPx]) => {
-        const out = {removed: 0, scrolled: false, method: 'none'};
-
-        // ---- Step 1: remove the AI Overview / AI answer card ----------------
-        const he = (text) => (text || '').toLowerCase();
-        const wanted = ['ai overview', 'ai-powered', 'generated by ai',
-                        'ai mode', 'search labs'];
-        // Find any small element whose OWN text is an AI-overview label.
-        const candidates = document.querySelectorAll(
-            'h1, h2, h3, span, div[role="heading"], [aria-label]');
-        for (const el of candidates) {
-            const label = he(el.getAttribute && el.getAttribute('aria-label'));
-            const txt = he(el.textContent);
-            const isLabel =
-                wanted.some(w => label === w || label.startsWith('ai overview')) ||
-                (txt.length < 40 && wanted.some(w => txt.trim() === w ||
-                                                     txt.includes('ai overview')));
-            if (!isLabel) continue;
-            // Walk up a few levels to capture the WHOLE card, but stop before
-            // we swallow the main results container.
-            let node = el;
-            for (let i = 0; i < 6 && node && node.parentElement; i++) {
-                const p = node.parentElement;
-                const pid = (p.id || '').toLowerCase();
-                if (pid === 'rso' || pid === 'search' || pid === 'center_col' ||
-                    p.tagName === 'BODY') break;
-                node = p;
-            }
-            try { node.remove(); out.removed++; }
-            catch (e) { node.style.setProperty('display','none','important');
-                        out.removed++; }
-        }
-
-        // Google also shows a right-hand "N sites" source panel; drop it too.
-        if (engine === 'google') {
-            document.querySelectorAll('[data-attrid], div').forEach(d => {
-                const t = he(d.textContent);
-                if (t && /^\\s*\\d+\\s+sites\\b/.test(t) && d.offsetHeight < 700) {
-                    try { d.remove(); out.removed++; } catch (e) {}
-                }
-            });
-        }
-
-        // ---- Step 2: scroll the first organic result to the top ------------
-        const firstResultSelectors = {
-            google: ['#rso', '#search #rso', '#rso .MjjYud', '#rso div.g',
-                     'div#center_col #rso'],
-            bing:   ['#b_results > li.b_algo', '#b_results'],
-            duckduckgo: ['ol.react-results--main li[data-layout="organic"]',
-                         'section[data-testid="mainline"]',
-                         'article[data-testid="result"]']
-        };
-        const sels = firstResultSelectors[engine] || [];
-        for (const sel of sels) {
-            const target = document.querySelector(sel);
-            if (target) {
-                target.scrollIntoView({block: 'start', inline: 'nearest'});
-                out.scrolled = true;
-                out.method = sel;
-                break;
-            }
-        }
-        if (!out.scrolled) {
-            window.scrollTo({top: fallbackPx, behavior: 'instant'});
-            out.method = 'fixed-px';
-        }
-        return out;
-    }
+    Scroll from top to bottom in steps so lazy-loaded content (images, the AI
+    Overview, later results) all render before a full-page capture, then return
+    to the top so the image starts cleanly.
     """
     try:
-        res = page.evaluate(js, [engine, scroll_px])
-        if res:
-            if res.get("removed"):
-                print(f"  - Removed {res['removed']} AI Overview / source block(s).")
-            print(f"  - Scrolled to organic results (via: {res.get('method')}).")
-    except Exception as e:  # noqa: BLE001
-        # Fall back to a plain scroll if the richer logic errored out.
-        try:
-            page.evaluate("(px) => window.scrollTo({top: px})", scroll_px)
-        except Exception:
-            pass
-    page.wait_for_timeout(600)
+        total = page.evaluate("document.body.scrollHeight")
+        step = 700
+        pos = 0
+        while pos < total:
+            page.evaluate("(y) => window.scrollTo(0, y)", pos)
+            page.wait_for_timeout(300)
+            pos += step
+            total = page.evaluate("document.body.scrollHeight")  # may grow
+        page.evaluate("() => window.scrollTo(0, 0)")
+        page.wait_for_timeout(500)
+    except Exception:
+        pass
 
 
 def add_banner(page, query: str, ts: dt.datetime) -> None:
-    """Inject a banner showing the query + capture time so it's in the image."""
+    """Inject a banner showing the query + capture time at the top of the page."""
     when = ts.strftime("%Y-%m-%d %H:%M:%S")
     js = """
     ([query, when]) => {
@@ -283,19 +185,14 @@ def log_result(output_dir: Path, ts: dt.datetime, query: str, path: Path) -> Non
 # ----------------------------------------------------------------------------- #
 #  Core routine
 # ----------------------------------------------------------------------------- #
-def run(query: str, output_dir: Path, full_page: bool, headed: bool,
-        ignore_https_errors: bool, browser_channel: str, engine: str,
-        profile_dir: Path, skip_ai: bool, scroll_px: int) -> Path:
+def run(query: str, output_dir: Path, headed: bool, ignore_https_errors: bool,
+        browser_channel: str, engine: str, profile_dir: Path) -> Path:
     output_dir.mkdir(parents=True, exist_ok=True)
     profile_dir.mkdir(parents=True, exist_ok=True)
 
     ts = timestamp()
     out_path = output_dir / make_filename(ts)
     search_url = SEARCH_URLS[engine] + quote_plus(query)
-    # For Google, the most reliable way to avoid the AI Overview is the hidden
-    # "Web" filter (udm=14), which never renders it server-side.
-    if engine == "google" and skip_ai:
-        search_url += GOOGLE_WEB_ONLY_PARAM
 
     ua = ("Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
           "AppleWebKit/537.36 (KHTML, like Gecko) "
@@ -314,16 +211,12 @@ def run(query: str, output_dir: Path, full_page: bool, headed: bool,
         if browser_channel and browser_channel.lower() != "chromium":
             ctx_kwargs["channel"] = browser_channel
 
-        # Persistent context keeps cookies/session between runs -> fewer CAPTCHAs.
         context = p.chromium.launch_persistent_context(**ctx_kwargs)
         context.add_init_script(STEALTH_JS)
         page = context.pages[0] if context.pages else context.new_page()
 
-        mode = ""
-        if engine == "google" and skip_ai:
-            mode = "  [Web-only mode: AI Overview disabled via udm=14]"
         print(f'Searching {engine} for: "{query}"  '
-              f'(browser: {browser_channel or "chromium"}){mode}')
+              f'(browser: {browser_channel or "chromium"})')
         try:
             page.goto(search_url, timeout=30000, wait_until="domcontentloaded")
         except PWTimeout:
@@ -335,20 +228,18 @@ def run(query: str, output_dir: Path, full_page: bool, headed: bool,
         if engine == "google":
             handle_captcha(page, headed)
 
-        page.wait_for_timeout(1000)
-
-        if skip_ai:
-            skip_ai_overview(page, engine, scroll_px)
+        # Let everything (incl. the async AI Overview) finish loading.
+        try:
+            page.wait_for_load_state("networkidle", timeout=8000)
+        except PWTimeout:
+            pass
+        scroll_to_load_all(page)
 
         add_banner(page, query, ts)
 
-        # A full-page shot ignores the scroll offset (it captures everything),
-        # so when skipping the AI block we force a viewport shot to honour it.
-        use_full_page = full_page and not skip_ai
-        if full_page and skip_ai:
-            print("  - Note: --full-page ignored because --skip-ai-overview "
-                  "needs a scrolled viewport capture.")
-        page.screenshot(path=str(out_path), full_page=use_full_page)
+        # Full-page capture: the entire first results page in one image.
+        page.screenshot(path=str(out_path), full_page=True)
+        print("  - Captured the full first results page.")
         context.close()
 
     log_result(output_dir, ts, query, out_path)
@@ -360,7 +251,7 @@ def run(query: str, output_dir: Path, full_page: bool, headed: bool,
 # ----------------------------------------------------------------------------- #
 def parse_args(argv):
     parser = argparse.ArgumentParser(
-        description="Perform a web search and save a timestamped screenshot."
+        description="Search the web and screenshot the entire first results page."
     )
     parser.add_argument("query", nargs="*",
                         help="The search query. If omitted, you'll be prompted.")
@@ -375,15 +266,6 @@ def parse_args(argv):
                              "(cookies/session). Default: ./edge_profile.")
     parser.add_argument("--browser-channel", "-b", default="msedge",
                         help="'msedge' (default), 'chrome', or 'chromium'.")
-    parser.add_argument("--skip-ai-overview", action="store_true",
-                        help="Hide the AI Overview / AI answer block and scroll "
-                             "down slightly so organic results are captured.")
-    parser.add_argument("--scroll-px", type=int, default=350,
-                        help="How many pixels to scroll down when skipping the "
-                             "AI Overview (default: 350).")
-    parser.add_argument("--full-page", action="store_true",
-                        help="Capture the entire scrollable page. (Ignored when "
-                             "--skip-ai-overview is used.)")
     parser.add_argument("--headed", action="store_true",
                         help="Show the browser window (needed to solve a CAPTCHA "
                              "by hand). Default: headless.")
@@ -410,14 +292,11 @@ def main(argv=None):
         path = run(
             query=query,
             output_dir=Path(args.output_dir).expanduser().resolve(),
-            full_page=args.full_page,
             headed=args.headed,
             ignore_https_errors=args.ignore_https_errors,
             browser_channel=args.browser_channel,
             engine=args.engine,
             profile_dir=Path(args.profile_dir).expanduser().resolve(),
-            skip_ai=args.skip_ai_overview,
-            scroll_px=args.scroll_px,
         )
     except Exception as exc:  # noqa: BLE001
         print(f"Something went wrong: {exc}")
