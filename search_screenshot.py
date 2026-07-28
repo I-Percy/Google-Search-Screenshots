@@ -1,8 +1,10 @@
 #!/usr/bin/env python3
 """
-google_search_screenshot.py
+search_screenshot.py
 ---------------------------
 Performs a web search and saves a screenshot of the ENTIRE first results page.
+Can be configured to run with google, bing, or duckduckgo. 
+ Can also add more to the code if you'd like your own search engine. 
 
 Features
   * Captures the full, scrollable first page of results (top to bottom) 
@@ -18,14 +20,14 @@ Features
     * Run with --headed command first to save captcha settings. 
 
 Typical usage
-  python google_search_screenshot.py "Cat Facts" --headed --ignore-https-errors
+  python search_screenshot.py "Cat Facts" --headed --ignore-https-errors
 
   # Later runs usually skip the CAPTCHA thanks to the saved profile:
-  python google_search_screenshot.py "another query" --ignore-https-errors
+  python search_screenshot.py "another query" --ignore-https-errors
 
   # CAPTCHA-free alternative engines:
-  python google_search_screenshot.py "Cat Facts" --engine bing
-  python google_search_screenshot.py "Cat Facts" --engine duckduckgo
+  python search_screenshot.py "Cat Facts" --engine bing
+  python search_screenshot.py "Cat Facts" --engine duckduckgo
 
 Setup
   pip install playwright
